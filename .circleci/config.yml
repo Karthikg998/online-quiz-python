@@ -169,17 +169,25 @@ jobs:
             docker stop smoke-test && docker rm smoke-test
 
             if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_TOKEN" ]; then
-              # Strip any prefix like 'DOCKERHUB_USER=' or '--username='
-              CLEAN_USER="${DOCKER_USER##*=}"
-              CLEAN_TOKEN="${DOCKER_TOKEN##*=}"
+              RAW_USER="${DOCKER_USER##*=}"
+              RAW_TOKEN="${DOCKER_TOKEN##*=}"
 
-              # Strip quotes, whitespace, and carriage returns
-              CLEAN_USER=$(printf '%s' "$CLEAN_USER" | tr -d '[:space:]"'\''')
-              CLEAN_TOKEN=$(printf '%s' "$CLEAN_TOKEN" | tr -d '[:space:]"'\''')
+              # If user was entered as 'docker.io/username' or 'username/project'
+              if [[ "$RAW_USER" == *"/"* ]] && [[ "$RAW_USER" != *"http"* ]]; then
+                if [[ "$RAW_USER" == "docker.io/"* ]]; then
+                  RAW_USER="${RAW_USER#docker.io/}"
+                else
+                  RAW_USER="${RAW_USER%%/*}"
+                fi
+              fi
+
+              # Strip angle brackets, quotes, whitespace, and control characters
+              CLEAN_USER=$(printf '%s' "$RAW_USER" | tr -d '<>"'\''[:space:]')
+              CLEAN_TOKEN=$(printf '%s' "$RAW_TOKEN" | tr -d '<>"'\''[:space:]')
 
               echo "Authenticating to Docker Hub as username: '$CLEAN_USER' (token length: ${#CLEAN_TOKEN})"
 
-              printf '%s' "$CLEAN_TOKEN" | docker login -u "$CLEAN_USER" --password-stdin
+              printf '%s' "$CLEAN_TOKEN" | docker login -u "$CLEAN_USER" --password-stdin docker.io
 
               docker tag "${PROJECT}:build" "${CLEAN_USER}/${PROJECT}:${MOVING_TAG}"
               docker tag "${PROJECT}:build" "${CLEAN_USER}/${PROJECT}:${IMMUTABLE_TAG}"
