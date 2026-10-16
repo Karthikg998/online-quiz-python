@@ -141,12 +141,12 @@ jobs:
     steps:
       - checkout
       - setup_remote_docker:
-          version: docker24
+          version: default
       - run:
           name: Build and Push Docker Image
           command: |
-            DOCKER_USER=$(printf '%s' "${DOCKERHUB_USER:-$DOCKERHUB_USERNAME}" | LC_ALL=C tr -cd 'a-zA-Z0-9')
-            DOCKER_TOKEN=$(printf '%s' "${DOCKERHUB_TOKEN:-$DOCKERHUB_PASSWORD}" | LC_ALL=C tr -cd 'A-Za-z0-9_-')
+            DOCKER_USER="${DOCKERHUB_USER:-$DOCKERHUB_USERNAME}"
+            DOCKER_TOKEN="${DOCKERHUB_TOKEN:-$DOCKERHUB_PASSWORD}"
             PROJECT="${CIRCLE_PROJECT_REPONAME:-online-quiz-python}"
             MOVING_TAG="<< parameters.tag_name >>"
             IMMUTABLE_TAG="${CIRCLE_BRANCH}-${CIRCLE_SHA1:0:7}"
@@ -166,28 +166,19 @@ jobs:
               echo "ERROR: Container is running as root!"
               exit 1
             fi
-            docker stop smoke-test
-            docker rm smoke-test
+            docker stop smoke-test && docker rm smoke-test
 
-            echo "User length: ${#DOCKER_USER}, token length: ${#DOCKER_TOKEN}"
-
-            if [ -z "$DOCKER_USER" ] || [ -z "$DOCKER_TOKEN" ]; then
-              echo "ERROR: Docker Hub credentials are missing!"
+            if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_TOKEN" ]; then
+              echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
+              docker tag "${PROJECT}:build" "${DOCKER_USER}/${PROJECT}:${MOVING_TAG}"
+              docker tag "${PROJECT}:build" "${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+              docker push "${DOCKER_USER}/${PROJECT}:${MOVING_TAG}"
+              docker push "${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+              echo "Successfully pushed ${DOCKER_USER}/${PROJECT}:${MOVING_TAG} and ${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+            else
+              echo "ERROR: DOCKERHUB_USER or DOCKERHUB_TOKEN environment variables not set in CircleCI!"
               exit 1
             fi
-
-            echo "Token prefix: ${DOCKER_TOKEN:0:9}"
-            curl -s -o /dev/null -w "auth.docker.io status: %{http_code}\n" \
-              -u "$DOCKER_USER:$DOCKER_TOKEN" \
-              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${DOCKER_USER}/test:pull"
-
-            printf '%s' "$DOCKER_TOKEN" | docker login --username "$DOCKER_USER" --password-stdin
-
-            docker tag "${PROJECT}:build" "${DOCKER_USER}/${PROJECT}:${MOVING_TAG}"
-            docker tag "${PROJECT}:build" "${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
-            docker push "${DOCKER_USER}/${PROJECT}:${MOVING_TAG}"
-            docker push "${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
-            echo "Successfully pushed both Docker images."
 
 workflows:
   version: 2
