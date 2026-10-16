@@ -141,7 +141,7 @@ jobs:
     steps:
       - checkout
       - setup_remote_docker:
-          version: default
+          version: docker24
       - run:
           name: Build and Push Docker Image
           command: |
@@ -175,6 +175,11 @@ jobs:
               echo "ERROR: Docker Hub credentials are missing!"
               exit 1
             fi
+
+            echo "Token prefix: ${DOCKER_TOKEN:0:9}"
+            curl -s -o /dev/null -w "auth.docker.io status: %{http_code}\n" \
+              -u "$DOCKER_USER:$DOCKER_TOKEN" \
+              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${DOCKER_USER}/test:pull"
 
             printf '%s' "$DOCKER_TOKEN" | docker login --username "$DOCKER_USER" --password-stdin
 
