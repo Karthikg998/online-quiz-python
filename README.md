@@ -94,7 +94,14 @@ The live attempt - answers so far and time remaining - is held with a TTL equal 
 
 A student who closes the tab and comes back must get their REMAINING time, not a fresh timer. Store the deadline, never the seconds left.
 
-Write your answer in your README. It is worth more marks than the feature.
+### Solution & Rationale
+If the system stores a relative number like `seconds_remaining`, keeping it accurate requires ticking countdown background workers in storage or trusting client-reported timers. If the student closes the browser, disconnects, or refreshes the page, a stored duration pauses or gets wiped, allowing timer exploitation.
+
+By storing the **immutable deadline timestamp** (`started_at + limit_seconds` in UTC) in both PostgreSQL and Redis:
+1. **Stateless, deterministic calculation**: Any server instance computes `seconds_left = max(0, int((deadline - now).total_seconds()))` on the fly.
+2. **Survives client refreshes and server restarts**: Real-world time elapses regardless of client connection state. If a student disconnects and returns 5 minutes later, their remaining time reflects the true elapsed duration without requiring active background timer jobs.
+3. **Resilient TTL cleanup**: Redis keys use a TTL slightly longer than the quiz limit (`limit_seconds + 120`), ensuring abandoned attempts expire automatically with zero memory leaks.
+4. **Fair expiration evaluation**: Network latency on submit is handled cleanly with a small grace period (`is_expired(deadline, grace_seconds=2)`) against the absolute deadline.
 
 ---
 
