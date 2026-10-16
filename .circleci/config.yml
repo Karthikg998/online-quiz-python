@@ -169,12 +169,14 @@ jobs:
             docker stop smoke-test && docker rm smoke-test
 
             if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_TOKEN" ]; then
-              echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
-              docker tag "${PROJECT}:build" "${DOCKER_USER}/${PROJECT}:${MOVING_TAG}"
-              docker tag "${PROJECT}:build" "${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
-              docker push "${DOCKER_USER}/${PROJECT}:${MOVING_TAG}"
-              docker push "${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
-              echo "Successfully pushed ${DOCKER_USER}/${PROJECT}:${MOVING_TAG} and ${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+              CLEAN_USER=$(printf '%s' "$DOCKER_USER" | tr -d '[:space:]"')
+              CLEAN_TOKEN=$(printf '%s' "$DOCKER_TOKEN" | tr -d '[:space:]"')
+              printf '%s' "$CLEAN_TOKEN" | docker login -u "$CLEAN_USER" --password-stdin
+              docker tag "${PROJECT}:build" "${CLEAN_USER}/${PROJECT}:${MOVING_TAG}"
+              docker tag "${PROJECT}:build" "${CLEAN_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+              docker push "${CLEAN_USER}/${PROJECT}:${MOVING_TAG}"
+              docker push "${CLEAN_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+              echo "Successfully pushed ${CLEAN_USER}/${PROJECT}:${MOVING_TAG} and ${CLEAN_USER}/${PROJECT}:${IMMUTABLE_TAG}"
             else
               echo "ERROR: DOCKERHUB_USER or DOCKERHUB_TOKEN environment variables not set in CircleCI!"
               exit 1
