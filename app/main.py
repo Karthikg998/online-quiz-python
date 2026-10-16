@@ -33,6 +33,24 @@ def quizzes():
         " FROM quizzes q ORDER BY q.id")}
 
 
+@app.get("/quizzes/{quiz_id}")
+def quiz_detail(quiz_id: int):
+    quiz = db.one(
+        "SELECT q.id, q.title, q.limit_seconds, q.negative_marks, q.partial_credit,"
+        " (SELECT count(*) FROM questions x WHERE x.quiz_id=q.id) AS questions"
+        " FROM quizzes q WHERE q.id=%s",
+        (quiz_id,),
+    )
+    if not quiz:
+        raise HTTPException(404, "no such quiz")
+    return {"quiz": quiz}
+
+
+@app.get("/version")
+def version():
+    return {"version": "1.0.0", "service": "online-quiz"}
+
+
 @app.post("/attempts", status_code=201)
 def start(payload: dict = Body(...)):
     quiz = db.one("SELECT id, limit_seconds FROM quizzes WHERE id=%s",
