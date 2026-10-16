@@ -14,7 +14,7 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Run gitleaks secret scanner
+          name: Run gitleaks secret scan across git history
           command: |
             gitleaks detect --verbose --redact
 
@@ -42,6 +42,12 @@ jobs:
           command: |
             . .venv/bin/activate
             ruff check .
+      - run:
+          name: Run hadolint on Dockerfile
+          command: |
+            curl -sSL -o hadolint "https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64"
+            chmod +x hadolint
+            ./hadolint Dockerfile
 
   unit-tests:
     executor: python-executor
@@ -67,7 +73,7 @@ jobs:
           command: |
             . .venv/bin/activate
             mkdir -p test-results coverage
-            pytest tests/unit --cov=app --cov-report=term-missing --cov-report=xml:coverage/coverage.xml --cov-fail-under=70 --junitxml=test-results/unit.xml
+            pytest tests/unit --cov=app --cov-report=term-missing --cov-report=xml:coverage/coverage.xml --cov-report=html:coverage/html --cov-fail-under=70 --junitxml=test-results/unit.xml
       - store_test_results:
           path: test-results
       - store_artifacts:
@@ -93,7 +99,7 @@ jobs:
           command: |
             sudo apt-get update && sudo apt-get install -y postgresql-client
       - run:
-          name: Wait for Postgres and Redis readiness
+          name: Wait for services readiness
           command: |
             dockerize -wait tcp://localhost:5432 -wait tcp://localhost:6379 -timeout 1m
             until pg_isready -h localhost -p 5432 -U postgres -d quizdb; do
@@ -127,85 +133,33 @@ jobs:
       - store_test_results:
           path: test-results
 
-  build-and-push-qa:
+  build-and-push:
     executor: python-executor
+    parameters:
+      tag_name:
+        type: string
     steps:
       - checkout
       - setup_remote_docker:
           version: default
       - run:
-          name: Build Docker image
+          name: Build and Push Docker Image
           command: |
-            docker build -t online-quiz-python:qa .
-      - run:
-          name: Smoke test container and verify non-root user
-          command: |
-            docker run -d --name smoke-test -p 8080:8080 online-quiz-python:qa
-            sleep 3
-            USER_ID=$(docker exec smoke-test id -u)
-            echo "Container running as UID: $USER_ID"
-            if [ "$USER_ID" -eq 0 ]; then
-              echo "ERROR: Container is running as root!"
-              exit 1
-            fi
-            docker stop smoke-test && docker rm smoke-test
-      - run:
-          name: Push to Docker Hub (:qa and :main-<short-sha>)
-          command: |
-            SHORT_SHA=${CIRCLE_SHA1:0:7}
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
-            docker tag online-quiz-python:qa "${DOCKERHUB_USER}/online-quiz-python:qa"
-            docker tag online-quiz-python:qa "${DOCKERHUB_USER}/online-quiz-python:main-${SHORT_SHA}"
-            docker push "${DOCKERHUB_USER}/online-quiz-python:qa"
-            docker push "${DOCKERHUB_USER}/online-quiz-python:main-${SHORT_SHA}"
+            DOCKER_USER="${DOCKERHUB_USER:-$DOCKERHUB_USERNAME}"
+            DOCKER_TOKEN="${DOCKERHUB_TOKEN:-$DOCKERHUB_PASSWORD}"
+            PROJECT="${CIRCLE_PROJECT_REPONAME:-online-quiz-python}"
+            MOVING_TAG="<< parameters.tag_name >>"
+            IMMUTABLE_TAG="${CIRCLE_BRANCH}-${CIRCLE_SHA1:0:7}"
 
-  build-and-push-stage:
-    executor: python-executor
-    steps:
-      - checkout
-      - setup_remote_docker:
-          version: default
-      - run:
-          name: Build Docker image
-          command: |
-            docker build -t online-quiz-python:stage .
-      - run:
-          name: Smoke test container and verify non-root user
-          command: |
-            docker run -d --name smoke-test -p 8080:8080 online-quiz-python:stage
-            sleep 3
-            USER_ID=$(docker exec smoke-test id -u)
-            echo "Container running as UID: $USER_ID"
-            if [ "$USER_ID" -eq 0 ]; then
-              echo "ERROR: Container is running as root!"
-              exit 1
-            fi
-            docker stop smoke-test && docker rm smoke-test
-      - run:
-          name: Push to Docker Hub (:stage and :staging-<short-sha>)
-          command: |
-            SHORT_SHA=${CIRCLE_SHA1:0:7}
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
-            docker tag online-quiz-python:stage "${DOCKERHUB_USER}/online-quiz-python:stage"
-            docker tag online-quiz-python:stage "${DOCKERHUB_USER}/online-quiz-python:staging-${SHORT_SHA}"
-            docker push "${DOCKERHUB_USER}/online-quiz-python:stage"
-            docker push "${DOCKERHUB_USER}/online-quiz-python:staging-${SHORT_SHA}"
+            echo "Building image for branch: ${CIRCLE_BRANCH}"
+            echo "Repository: ${DOCKER_USER}/${PROJECT}"
+            echo "Tags: :${MOVING_TAG} and :${IMMUTABLE_TAG}"
 
-  build-and-push-prod:
-    executor: python-executor
-    steps:
-      - checkout
-      - setup_remote_docker:
-          version: default
-      - run:
-          name: Build Docker image
-          command: |
-            docker build -t online-quiz-python:prod .
-      - run:
-          name: Smoke test container and verify non-root user
-          command: |
-            docker run -d --name smoke-test -p 8080:8080 online-quiz-python:prod
-            sleep 3
+            docker build -t "${PROJECT}:build" .
+
+            # Smoke test container to ensure it runs as non-root
+            docker run -d --name smoke-test -p 8080:8080 "${PROJECT}:build"
+            sleep 2
             USER_ID=$(docker exec smoke-test id -u)
             echo "Container running as UID: $USER_ID"
             if [ "$USER_ID" -eq 0 ]; then
@@ -213,25 +167,30 @@ jobs:
               exit 1
             fi
             docker stop smoke-test && docker rm smoke-test
-      - run:
-          name: Push to Docker Hub (:prod and :prod-<short-sha>)
-          command: |
-            SHORT_SHA=${CIRCLE_SHA1:0:7}
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
-            docker tag online-quiz-python:prod "${DOCKERHUB_USER}/online-quiz-python:prod"
-            docker tag online-quiz-python:prod "${DOCKERHUB_USER}/online-quiz-python:prod-${SHORT_SHA}"
-            docker push "${DOCKERHUB_USER}/online-quiz-python:prod"
-            docker push "${DOCKERHUB_USER}/online-quiz-python:prod-${SHORT_SHA}"
+
+            if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_TOKEN" ]; then
+              echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
+              docker tag "${PROJECT}:build" "${DOCKER_USER}/${PROJECT}:${MOVING_TAG}"
+              docker tag "${PROJECT}:build" "${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+              docker push "${DOCKER_USER}/${PROJECT}:${MOVING_TAG}"
+              docker push "${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+              echo "Successfully pushed ${DOCKER_USER}/${PROJECT}:${MOVING_TAG} and ${DOCKER_USER}/${PROJECT}:${IMMUTABLE_TAG}"
+            else
+              echo "ERROR: DOCKERHUB_USER or DOCKERHUB_TOKEN environment variables not set in CircleCI!"
+              exit 1
+            fi
 
 workflows:
   version: 2
-  qa_pipeline:
+  qa-pipeline:
     jobs:
       - secret-scan:
           filters:
             branches:
               only: main
       - lint:
+          requires:
+            - secret-scan
           filters:
             branches:
               only: main
@@ -247,24 +206,66 @@ workflows:
           filters:
             branches:
               only: main
-      - build-and-push-qa:
+      - build-and-push:
+          name: push-qa
+          tag_name: "qa"
           requires:
-            - secret-scan
             - integration-tests
           filters:
             branches:
               only: main
 
-  staging_pipeline:
+  staging-pipeline:
     jobs:
-      - build-and-push-stage:
+      - build-and-push:
+          name: push-stage
+          tag_name: "stage"
           filters:
             branches:
               only: staging
 
-  prod_pipeline:
+  prod-pipeline:
     jobs:
-      - build-and-push-prod:
+      - build-and-push:
+          name: push-prod
+          tag_name: "prod"
           filters:
             branches:
               only: prod
+
+  pr-validation:
+    jobs:
+      - secret-scan:
+          filters:
+            branches:
+              ignore:
+                - main
+                - staging
+                - prod
+      - lint:
+          requires:
+            - secret-scan
+          filters:
+            branches:
+              ignore:
+                - main
+                - staging
+                - prod
+      - unit-tests:
+          requires:
+            - lint
+          filters:
+            branches:
+              ignore:
+                - main
+                - staging
+                - prod
+      - integration-tests:
+          requires:
+            - unit-tests
+          filters:
+            branches:
+              ignore:
+                - main
+                - staging
+                - prod
