@@ -28,14 +28,15 @@ services:
       DATABASE_URL: postgresql://quizuser:quizpass_local@db:5432/quizdb
       REDIS_URL: redis://redis:6379/0
     ports:
-      - "8000:8000"
+      - "8080:8080"
+      - "8000:8080"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
