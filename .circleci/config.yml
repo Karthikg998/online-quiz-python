@@ -169,9 +169,18 @@ jobs:
             docker stop smoke-test && docker rm smoke-test
 
             if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_TOKEN" ]; then
-              CLEAN_USER=$(printf '%s' "$DOCKER_USER" | tr -d '[:space:]"')
-              CLEAN_TOKEN=$(printf '%s' "$DOCKER_TOKEN" | tr -d '[:space:]"')
+              # Strip any prefix like 'DOCKERHUB_USER=' or '--username='
+              CLEAN_USER="${DOCKER_USER##*=}"
+              CLEAN_TOKEN="${DOCKER_TOKEN##*=}"
+
+              # Strip quotes, whitespace, and carriage returns
+              CLEAN_USER=$(printf '%s' "$CLEAN_USER" | tr -d '[:space:]"'\''')
+              CLEAN_TOKEN=$(printf '%s' "$CLEAN_TOKEN" | tr -d '[:space:]"'\''')
+
+              echo "Authenticating to Docker Hub as username: '$CLEAN_USER' (token length: ${#CLEAN_TOKEN})"
+
               printf '%s' "$CLEAN_TOKEN" | docker login -u "$CLEAN_USER" --password-stdin
+
               docker tag "${PROJECT}:build" "${CLEAN_USER}/${PROJECT}:${MOVING_TAG}"
               docker tag "${PROJECT}:build" "${CLEAN_USER}/${PROJECT}:${IMMUTABLE_TAG}"
               docker push "${CLEAN_USER}/${PROJECT}:${MOVING_TAG}"
