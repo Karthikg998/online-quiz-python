@@ -1,0 +1,270 @@
+version: 2.1
+
+executors:
+  python-executor:
+    docker:
+      - image: cimg/python:3.12.8
+    working_directory: ~/repo
+
+jobs:
+  secret-scan:
+    docker:
+      - image: zricethezav/gitleaks:v8.24.0
+    working_directory: ~/repo
+    steps:
+      - checkout
+      - run:
+          name: Run gitleaks secret scanner
+          command: |
+            gitleaks detect --verbose --redact
+
+  lint:
+    executor: python-executor
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - pip-cache-v1-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}
+            - pip-cache-v1-
+      - run:
+          name: Install dependencies
+          command: |
+            python -m venv .venv
+            . .venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements-dev.txt
+      - save_cache:
+          key: pip-cache-v1-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}
+          paths:
+            - ~/.cache/pip
+      - run:
+          name: Run ruff linter
+          command: |
+            . .venv/bin/activate
+            ruff check .
+
+  unit-tests:
+    executor: python-executor
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - pip-cache-v1-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}
+            - pip-cache-v1-
+      - run:
+          name: Install dependencies
+          command: |
+            python -m venv .venv
+            . .venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements-dev.txt
+      - save_cache:
+          key: pip-cache-v1-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}
+          paths:
+            - ~/.cache/pip
+      - run:
+          name: Run unit tests with coverage
+          command: |
+            . .venv/bin/activate
+            mkdir -p test-results coverage
+            pytest tests/unit --cov=app --cov-report=term-missing --cov-report=xml:coverage/coverage.xml --cov-fail-under=70 --junitxml=test-results/unit.xml
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: coverage
+
+  integration-tests:
+    docker:
+      - image: cimg/python:3.12.8
+        environment:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/quizdb
+          REDIS_URL: redis://localhost:6379/0
+      - image: cimg/postgres:16.8
+        environment:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: quizdb
+      - image: cimg/redis:7.2.7
+    working_directory: ~/repo
+    steps:
+      - checkout
+      - run:
+          name: Install postgresql-client
+          command: |
+            sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run:
+          name: Wait for Postgres and Redis readiness
+          command: |
+            dockerize -wait tcp://localhost:5432 -wait tcp://localhost:6379 -timeout 1m
+            until pg_isready -h localhost -p 5432 -U postgres -d quizdb; do
+              echo "Waiting for PostgreSQL..."
+              sleep 1
+            done
+      - run:
+          name: Apply migrations in filename order
+          command: |
+            for f in $(ls migrations/*.sql | sort); do
+              echo "Applying $f..."
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+            done
+      - restore_cache:
+          keys:
+            - pip-cache-v1-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}
+            - pip-cache-v1-
+      - run:
+          name: Install dependencies
+          command: |
+            python -m venv .venv
+            . .venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements-dev.txt
+      - run:
+          name: Run integration tests
+          command: |
+            . .venv/bin/activate
+            mkdir -p test-results
+            pytest tests/integration -m integration --junitxml=test-results/integration.xml -v
+      - store_test_results:
+          path: test-results
+
+  build-and-push-qa:
+    executor: python-executor
+    steps:
+      - checkout
+      - setup_remote_docker:
+          version: default
+      - run:
+          name: Build Docker image
+          command: |
+            docker build -t online-quiz-python:qa .
+      - run:
+          name: Smoke test container and verify non-root user
+          command: |
+            docker run -d --name smoke-test -p 8080:8080 online-quiz-python:qa
+            sleep 3
+            USER_ID=$(docker exec smoke-test id -u)
+            echo "Container running as UID: $USER_ID"
+            if [ "$USER_ID" -eq 0 ]; then
+              echo "ERROR: Container is running as root!"
+              exit 1
+            fi
+            docker stop smoke-test && docker rm smoke-test
+      - run:
+          name: Push to Docker Hub (:qa and :main-<short-sha>)
+          command: |
+            SHORT_SHA=${CIRCLE_SHA1:0:7}
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+            docker tag online-quiz-python:qa "${DOCKERHUB_USER}/online-quiz-python:qa"
+            docker tag online-quiz-python:qa "${DOCKERHUB_USER}/online-quiz-python:main-${SHORT_SHA}"
+            docker push "${DOCKERHUB_USER}/online-quiz-python:qa"
+            docker push "${DOCKERHUB_USER}/online-quiz-python:main-${SHORT_SHA}"
+
+  build-and-push-stage:
+    executor: python-executor
+    steps:
+      - checkout
+      - setup_remote_docker:
+          version: default
+      - run:
+          name: Build Docker image
+          command: |
+            docker build -t online-quiz-python:stage .
+      - run:
+          name: Smoke test container and verify non-root user
+          command: |
+            docker run -d --name smoke-test -p 8080:8080 online-quiz-python:stage
+            sleep 3
+            USER_ID=$(docker exec smoke-test id -u)
+            echo "Container running as UID: $USER_ID"
+            if [ "$USER_ID" -eq 0 ]; then
+              echo "ERROR: Container is running as root!"
+              exit 1
+            fi
+            docker stop smoke-test && docker rm smoke-test
+      - run:
+          name: Push to Docker Hub (:stage and :staging-<short-sha>)
+          command: |
+            SHORT_SHA=${CIRCLE_SHA1:0:7}
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+            docker tag online-quiz-python:stage "${DOCKERHUB_USER}/online-quiz-python:stage"
+            docker tag online-quiz-python:stage "${DOCKERHUB_USER}/online-quiz-python:staging-${SHORT_SHA}"
+            docker push "${DOCKERHUB_USER}/online-quiz-python:stage"
+            docker push "${DOCKERHUB_USER}/online-quiz-python:staging-${SHORT_SHA}"
+
+  build-and-push-prod:
+    executor: python-executor
+    steps:
+      - checkout
+      - setup_remote_docker:
+          version: default
+      - run:
+          name: Build Docker image
+          command: |
+            docker build -t online-quiz-python:prod .
+      - run:
+          name: Smoke test container and verify non-root user
+          command: |
+            docker run -d --name smoke-test -p 8080:8080 online-quiz-python:prod
+            sleep 3
+            USER_ID=$(docker exec smoke-test id -u)
+            echo "Container running as UID: $USER_ID"
+            if [ "$USER_ID" -eq 0 ]; then
+              echo "ERROR: Container is running as root!"
+              exit 1
+            fi
+            docker stop smoke-test && docker rm smoke-test
+      - run:
+          name: Push to Docker Hub (:prod and :prod-<short-sha>)
+          command: |
+            SHORT_SHA=${CIRCLE_SHA1:0:7}
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+            docker tag online-quiz-python:prod "${DOCKERHUB_USER}/online-quiz-python:prod"
+            docker tag online-quiz-python:prod "${DOCKERHUB_USER}/online-quiz-python:prod-${SHORT_SHA}"
+            docker push "${DOCKERHUB_USER}/online-quiz-python:prod"
+            docker push "${DOCKERHUB_USER}/online-quiz-python:prod-${SHORT_SHA}"
+
+workflows:
+  version: 2
+  qa_pipeline:
+    jobs:
+      - secret-scan:
+          filters:
+            branches:
+              only: main
+      - lint:
+          filters:
+            branches:
+              only: main
+      - unit-tests:
+          requires:
+            - lint
+          filters:
+            branches:
+              only: main
+      - integration-tests:
+          requires:
+            - unit-tests
+          filters:
+            branches:
+              only: main
+      - build-and-push-qa:
+          requires:
+            - secret-scan
+            - integration-tests
+          filters:
+            branches:
+              only: main
+
+  staging_pipeline:
+    jobs:
+      - build-and-push-stage:
+          filters:
+            branches:
+              only: staging
+
+  prod_pipeline:
+    jobs:
+      - build-and-push-prod:
+          filters:
+            branches:
+              only: prod
