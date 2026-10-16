@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  001_schema.sql: |
+    CREATE TABLE IF NOT EXISTS quizzes (
+        id SERIAL PRIMARY KEY, title TEXT NOT NULL,
+        limit_seconds INT NOT NULL DEFAULT 600,
+        negative_marks NUMERIC(4,2) NOT NULL DEFAULT 0,
+        partial_credit BOOLEAN NOT NULL DEFAULT FALSE);
+
+    CREATE TABLE IF NOT EXISTS questions (
+        id SERIAL PRIMARY KEY,
+        quiz_id INT NOT NULL REFERENCES quizzes(id) ON DELETE CASCADE,
+        prompt TEXT NOT NULL,
+        choices JSONB NOT NULL,
+        correct INT[] NOT NULL,
+        marks NUMERIC(4,2) NOT NULL DEFAULT 1);
+
+    CREATE TABLE IF NOT EXISTS attempts (
+        id SERIAL PRIMARY KEY,
+        quiz_id INT NOT NULL REFERENCES quizzes(id) ON DELETE CASCADE,
+        student TEXT NOT NULL,
+        deadline TIMESTAMPTZ NOT NULL,
+        submitted BOOLEAN NOT NULL DEFAULT FALSE,
+        score NUMERIC(6,2),
+        started_at TIMESTAMPTZ NOT NULL DEFAULT now());
+
+  002_seed.sql: |
+    INSERT INTO quizzes (id,title,limit_seconds,negative_marks,partial_credit)
+    VALUES (1,'Git Basics',300,0.25,TRUE) ON CONFLICT DO NOTHING;
+    SELECT setval('quizzes_id_seq', GREATEST((SELECT MAX(id) FROM quizzes),1));
+
+    INSERT INTO questions (quiz_id,prompt,choices,correct,marks) VALUES
+     (1,'Which command stages a file?','["git add","git commit","git push","git log"]','{0}',1),
+     (1,'What does a commit store?','["a diff","a full snapshot","a branch","a remote"]','{1}',1),
+     (1,'Which are local-only commands?','["merge","push","commit","pull"]','{0,2}',2)
+    ON CONFLICT DO NOTHING;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              value: quizdb
+            - name: POSTGRES_USER
+              value: quizuser
+            - name: POSTGRES_PASSWORD
+              value: quizpass_local
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - quizuser
+                - -d
+                - quizdb
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
