@@ -114,3 +114,4 @@ By storing the **immutable deadline timestamp** (`started_at + limit_seconds` in
 | `relation "..." does not exist` | Migrations did not run, or the app started before they finished. |
 | Build takes minutes each time | `COPY . .` is above your dependency install. |
 | CI cannot reach the database | In CircleCI service containers the host **is** `localhost` — opposite of compose. |
+#hello 
